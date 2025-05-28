@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AccountViewSet, JournalEntryViewSet, TrialBalanceAPIView, 
     IncomeStatementAPIView, BalanceSheetAPIView, CashFlowStatementAPIView,
-    T12IncomeStatementAPIView, VendorViewSet, InvoiceViewSet # Add InvoiceViewSet
+    T12IncomeStatementAPIView, VendorViewSet, InvoiceViewSet, PurchaseOrderViewSet # Add InvoiceViewSet, PurchaseOrderViewSet
 )
 
 router = DefaultRouter()
@@ -11,6 +11,7 @@ router.register(r'accounts', AccountViewSet)
 router.register(r'journal-entries', JournalEntryViewSet)
 router.register(r'vendors', VendorViewSet)
 router.register(r'invoices', InvoiceViewSet) # Add this line
+router.register(r'purchaseorders', PurchaseOrderViewSet, basename='purchaseorder')
 
 urlpatterns = [
     path('', include(router.urls)),

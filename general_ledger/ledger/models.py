@@ -123,3 +123,63 @@ class InvoiceLineItem(models.Model):
 
     def __str__(self):
         return f"Line for Invoice {self.invoice.invoice_number} - {self.expense_account.account_name} - {self.amount}"
+
+class PurchaseOrder(models.Model):
+    DRAFT = 'DRAFT'
+    PENDING_APPROVAL = 'PENDING_APPROVAL'
+    APPROVED = 'APPROVED'
+    PARTIALLY_RECEIVED = 'PARTIALLY_RECEIVED'
+    RECEIVED = 'RECEIVED'
+    CANCELLED = 'CANCELLED'
+
+    STATUS_CHOICES = [
+        (DRAFT, 'Draft'),
+        (PENDING_APPROVAL, 'Pending Approval'),
+        (APPROVED, 'Approved'),
+        (PARTIALLY_RECEIVED, 'Partially Received'),
+        (RECEIVED, 'Received'),
+        (CANCELLED, 'Cancelled'),
+    ]
+
+    po_number = models.CharField(max_length=50, unique=True)
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name='purchase_orders')
+    order_date = models.DateField()
+    delivery_date = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=DRAFT)
+    shipping_address_line_1 = models.CharField(max_length=255, null=True, blank=True)
+    shipping_address_line_2 = models.CharField(max_length=255, null=True, blank=True)
+    shipping_city = models.CharField(max_length=100, null=True, blank=True)
+    shipping_state = models.CharField(max_length=100, null=True, blank=True)
+    shipping_zip_code = models.CharField(max_length=20, null=True, blank=True)
+    shipping_country = models.CharField(max_length=100, null=True, blank=True)
+    billing_address_line_1 = models.CharField(max_length=255, null=True, blank=True)
+    billing_address_line_2 = models.CharField(max_length=255, null=True, blank=True)
+    billing_city = models.CharField(max_length=100, null=True, blank=True)
+    billing_state = models.CharField(max_length=100, null=True, blank=True)
+    billing_zip_code = models.CharField(max_length=20, null=True, blank=True)
+    billing_country = models.CharField(max_length=100, null=True, blank=True)
+    terms_and_conditions = models.TextField(null=True, blank=True)
+    notes = models.TextField(null=True, blank=True)
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.po_number
+
+class PurchaseOrderLineItem(models.Model):
+    purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='line_items')
+    item_description = models.CharField(max_length=255)
+    quantity = models.DecimalField(max_digits=10, decimal_places=2)
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    total_price = models.DecimalField(max_digits=12, decimal_places=2) # Calculated field
+    product_or_service_code = models.CharField(max_length=50, null=True, blank=True)
+    account = models.ForeignKey(Account, on_delete=models.SET_NULL, null=True, blank=True, related_name='po_line_items')
+    department_code = models.CharField(max_length=20, null=True, blank=True)
+
+    def save(self, *args, **kwargs):
+        self.total_price = self.quantity * self.unit_price
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Line for PO {self.purchase_order.po_number} - {self.item_description}"

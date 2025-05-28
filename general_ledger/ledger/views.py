@@ -4,11 +4,11 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.db.models import Sum, Q
 from decimal import Decimal
-from .models import Account, JournalEntry, Transaction, Vendor, Invoice # Add Invoice
+from .models import Account, JournalEntry, Transaction, Vendor, Invoice, PurchaseOrder # Add Invoice, PurchaseOrder
 from .serializers import (
     AccountSerializer, JournalEntrySerializer, TrialBalanceReportSerializer, 
     TrialBalanceAccountSerializer, IncomeStatementSerializer, BalanceSheetSerializer,
-    CashFlowStatementSerializer, VendorSerializer, InvoiceSerializer # Add InvoiceSerializer
+    CashFlowStatementSerializer, VendorSerializer, InvoiceSerializer, PurchaseOrderSerializer # Add InvoiceSerializer, PurchaseOrderSerializer
 )
 from django.utils.dateparse import parse_date
 from django.utils import timezone # For default end_date
@@ -228,6 +228,55 @@ class T12IncomeStatementAPIView(APIView):
             return Response(serializer.validated_data)
         else:
             return Response(serializer.errors, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class PurchaseOrderViewSet(viewsets.ModelViewSet):
+    queryset = PurchaseOrder.objects.all()
+    serializer_class = PurchaseOrderSerializer
+    # permission_classes = [...] # Add permissions later if needed
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        purchase_order = self.get_object()
+        if purchase_order.status in [PurchaseOrder.DRAFT, PurchaseOrder.PENDING_APPROVAL]:
+            purchase_order.status = PurchaseOrder.APPROVED
+            purchase_order.save()
+            return Response({'status': 'Purchase Order approved'}, status=status.HTTP_200_OK)
+        return Response(
+            {'error': f'Purchase Order cannot be approved from its current state: {purchase_order.status}'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        purchase_order = self.get_object()
+        allowed_statuses_for_cancellation = [PurchaseOrder.DRAFT, PurchaseOrder.PENDING_APPROVAL, PurchaseOrder.APPROVED]
+        if purchase_order.status in allowed_statuses_for_cancellation:
+            purchase_order.status = PurchaseOrder.CANCELLED
+            purchase_order.save()
+            return Response({'status': 'Purchase Order cancelled'}, status=status.HTTP_200_OK)
+        return Response(
+            {'error': f'Purchase Order cannot be cancelled from its current state: {purchase_order.status}'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    @action(detail=True, methods=['post'])
+    def receive(self, request, pk=None):
+        purchase_order = self.get_object()
+        # For now, full receipt is assumed. Partial receipts would require more complex logic
+        # and potentially input about which lines/quantities are received.
+        if purchase_order.status in [PurchaseOrder.APPROVED, PurchaseOrder.PARTIALLY_RECEIVED]:
+            # In a more complex scenario, you might check if all items are received
+            # and then change status to RECEIVED. If only some are, it might be PARTIALLY_RECEIVED.
+            # For this placeholder, we'll just mark it as RECEIVED.
+            purchase_order.status = PurchaseOrder.RECEIVED 
+            purchase_order.save()
+            # TODO: Add logic here to create ReceivingSlip objects or update inventory based on line items.
+            # This is a placeholder for now.
+            return Response({'status': 'Purchase Order marked as received. Further processing (e.g., inventory update) placeholder.'}, status=status.HTTP_200_OK)
+        return Response(
+            {'error': f'Purchase Order cannot be marked as received from its current state: {purchase_order.status}'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
 class InvoiceViewSet(viewsets.ModelViewSet):
     queryset = Invoice.objects.all()

@@ -8,7 +8,7 @@ import datetime
 from dateutil.relativedelta import relativedelta
 from django.utils.dateparse import parse_date # Import parse_date
 
-from .models import Account, JournalEntry, Transaction
+from .models import Account, JournalEntry, Transaction, Vendor, PurchaseOrder, PurchaseOrderLineItem
 
 class BaseReportTestCase(APITestCase):
     @classmethod
@@ -327,3 +327,183 @@ class TestCashFlowStatementAPI(BaseReportTestCase):
 
 # Helper to parse dates from response if needed, though direct comparison works if format is exact
 # Removed redundant parse_date_from_response as parse_date from django.utils.dateparse is used directly.
+
+class PurchaseOrderAPITests(APITestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.vendor = Vendor.objects.create(name="Test Vendor Inc.")
+        cls.expense_account = Account.objects.create(account_code="6000", account_name="Test Expense Account", account_type="EXPENSE")
+        cls.today = timezone.now().date()
+
+        # Sample Purchase Order for use in multiple tests
+        cls.po1 = PurchaseOrder.objects.create(
+            po_number="PO001",
+            vendor=cls.vendor,
+            order_date=cls.today,
+            status=PurchaseOrder.DRAFT,
+            total_amount=Decimal("0.00") # Will be updated by line items if created directly
+        )
+        cls.po1_line1 = PurchaseOrderLineItem.objects.create(
+            purchase_order=cls.po1,
+            item_description="Test Item 1",
+            quantity=Decimal("2.00"),
+            unit_price=Decimal("50.00"),
+            account=cls.expense_account
+        ) # total_price = 100.00
+        cls.po1.total_amount = cls.po1_line1.total_price # Manually update PO total for this direct model creation
+        cls.po1.save()
+
+
+    def test_create_purchase_order_model(self):
+        po = PurchaseOrder.objects.create(
+            po_number="PO002",
+            vendor=self.vendor,
+            order_date=self.today,
+            status=PurchaseOrder.PENDING_APPROVAL,
+            total_amount=Decimal("150.00")
+        )
+        self.assertEqual(PurchaseOrder.objects.count(), 2) # po1 + po
+        self.assertEqual(po.po_number, "PO002")
+
+    def test_create_purchase_order_line_item_model(self):
+        po_for_line_test = PurchaseOrder.objects.create(
+            po_number="PO-LINETEST", vendor=self.vendor, order_date=self.today
+        )
+        line_item = PurchaseOrderLineItem.objects.create(
+            purchase_order=po_for_line_test,
+            item_description="Widget A",
+            quantity=Decimal("10.00"),
+            unit_price=Decimal("5.50"),
+            account=self.expense_account
+        )
+        self.assertEqual(line_item.total_price, Decimal("55.00")) # 10 * 5.50
+        self.assertEqual(po_for_line_test.line_items.count(), 1)
+        self.assertEqual(po_for_line_test.line_items.first(), line_item)
+
+    def _get_sample_po_payload(self, po_number="PO-API-TEST"):
+        return {
+            "po_number": po_number,
+            "vendor": self.vendor.id,
+            "order_date": self.today.strftime('%Y-%m-%d'),
+            "line_items": [
+                {
+                    "item_description": "API Item 1",
+                    "quantity": "3.00",
+                    "unit_price": "25.00", # Total 75.00
+                    "account": self.expense_account.id
+                },
+                {
+                    "item_description": "API Item 2",
+                    "quantity": "1.00",
+                    "unit_price": "125.00", # Total 125.00
+                    "account": self.expense_account.id
+                }
+            ]
+            # total_amount is read-only, should be calculated by serializer
+        }
+
+    def test_create_purchase_order_via_api_valid(self):
+        url = reverse('purchaseorder-list') # DefaultRouter generates basename-list
+        payload = self._get_sample_po_payload()
+        response = self.client.post(url, payload, format='json')
+        
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(PurchaseOrder.objects.count(), 2) # po1 + this new one
+        
+        created_po = PurchaseOrder.objects.get(po_number="PO-API-TEST")
+        self.assertEqual(created_po.vendor, self.vendor)
+        self.assertEqual(created_po.line_items.count(), 2)
+        # Expected total: (3 * 25) + (1 * 125) = 75 + 125 = 200
+        self.assertEqual(created_po.total_amount, Decimal("200.00"))
+        self.assertEqual(response.data['total_amount'], "200.00")
+
+    def test_create_purchase_order_api_no_line_items(self):
+        url = reverse('purchaseorder-list')
+        payload = self._get_sample_po_payload()
+        payload.pop("line_items") # Remove line items
+        
+        response = self.client.post(url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("line_items", response.data) # Check if error is related to line_items
+
+
+    def test_list_purchase_orders_api(self):
+        url = reverse('purchaseorder-list')
+        response = self.client.get(url, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1) # Only po1 created in setUpTestData
+        self.assertEqual(response.data[0]['po_number'], self.po1.po_number)
+
+    def test_retrieve_purchase_order_api(self):
+        url = reverse('purchaseorder-detail', kwargs={'pk': self.po1.pk})
+        response = self.client.get(url, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['po_number'], self.po1.po_number)
+        self.assertEqual(len(response.data['line_items']), 1)
+        self.assertEqual(Decimal(response.data['total_amount']), self.po1.total_amount)
+
+    def test_approve_purchase_order_action(self):
+        url = reverse('purchaseorder-approve', kwargs={'pk': self.po1.pk})
+        self.assertEqual(self.po1.status, PurchaseOrder.DRAFT) # Initial state
+        
+        response = self.client.post(url, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.po1.refresh_from_db()
+        self.assertEqual(self.po1.status, PurchaseOrder.APPROVED)
+        
+        # Try to approve again (should fail or do nothing gracefully)
+        response_already_approved = self.client.post(url, format='json')
+        self.assertEqual(response_already_approved.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response_already_approved.data)
+
+
+    def test_cancel_purchase_order_action(self):
+        # First approve it to test cancellation from APPROVED state
+        self.po1.status = PurchaseOrder.APPROVED
+        self.po1.save()
+
+        url = reverse('purchaseorder-cancel', kwargs={'pk': self.po1.pk})
+        response = self.client.post(url, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.po1.refresh_from_db()
+        self.assertEqual(self.po1.status, PurchaseOrder.CANCELLED)
+
+        # Try to cancel a DRAFT PO
+        draft_po = PurchaseOrder.objects.create(po_number="PO-DRAFT-CANCEL", vendor=self.vendor, order_date=self.today, status=PurchaseOrder.DRAFT)
+        url_draft_cancel = reverse('purchaseorder-cancel', kwargs={'pk': draft_po.pk})
+        response_draft = self.client.post(url_draft_cancel, format='json')
+        self.assertEqual(response_draft.status_code, status.HTTP_200_OK)
+        draft_po.refresh_from_db()
+        self.assertEqual(draft_po.status, PurchaseOrder.CANCELLED)
+
+        # Try to cancel an already cancelled PO
+        response_already_cancelled = self.client.post(url, format='json')
+        self.assertEqual(response_already_cancelled.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response_already_cancelled.data)
+
+
+    def test_receive_purchase_order_action(self):
+        self.po1.status = PurchaseOrder.APPROVED # Set to approved first
+        self.po1.save()
+        
+        url = reverse('purchaseorder-receive', kwargs={'pk': self.po1.pk})
+        response = self.client.post(url, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.po1.refresh_from_db()
+        self.assertEqual(self.po1.status, PurchaseOrder.RECEIVED)
+        self.assertIn("placeholder", response.data['status'].lower()) # Check for placeholder message
+
+        # Try to receive a DRAFT PO (invalid)
+        draft_po = PurchaseOrder.objects.create(po_number="PO-DRAFT-RECEIVE", vendor=self.vendor, order_date=self.today, status=PurchaseOrder.DRAFT)
+        url_draft_receive = reverse('purchaseorder-receive', kwargs={'pk': draft_po.pk})
+        response_draft = self.client.post(url_draft_receive, format='json')
+        self.assertEqual(response_draft.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response_draft.data)
+
+        # Try to receive an already received PO
+        response_already_received = self.client.post(url, format='json')
+        # Assuming receiving a fully received PO might be idempotent or lead to partial logic in future,
+        # but for now, the view only allows from APPROVED or PARTIALLY_RECEIVED.
+        # If it's already RECEIVED, it should be an error based on current view logic.
+        self.assertEqual(response_already_received.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response_already_received.data)

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Account, JournalEntry, Transaction, Vendor, Invoice, InvoiceLineItem # Add InvoiceLineItem
+from .models import Account, JournalEntry, Transaction, Vendor, Invoice, InvoiceLineItem, PurchaseOrder, PurchaseOrderLineItem
 from django.db import transaction # Changed import for decorator use
 from decimal import Decimal # Import Decimal for calculations
 
@@ -206,4 +206,157 @@ class InvoiceSerializer(serializers.ModelSerializer):
             for item_data in line_items_data:
                 InvoiceLineItem.objects.create(invoice=instance, **item_data)
         
+        return instance
+
+# Serializers for PurchaseOrder and PurchaseOrderLineItem
+
+class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PurchaseOrderLineItem
+        fields = ['id', 'purchase_order', 'item_description', 'quantity', 'unit_price', 
+                  'total_price', 'product_or_service_code', 'account', 'department_code']
+        read_only_fields = ['id', 'purchase_order', 'total_price']
+
+class PurchaseOrderSerializer(serializers.ModelSerializer):
+    line_items = PurchaseOrderLineItemSerializer(many=True)
+
+    class Meta:
+        model = PurchaseOrder
+        fields = [
+            'id', 'po_number', 'vendor', 'order_date', 'delivery_date', 'status',
+            'shipping_address_line_1', 'shipping_address_line_2', 'shipping_city', 
+            'shipping_state', 'shipping_zip_code', 'shipping_country',
+            'billing_address_line_1', 'billing_address_line_2', 'billing_city', 
+            'billing_state', 'billing_zip_code', 'billing_country',
+            'terms_and_conditions', 'notes', 'total_amount', 
+            'created_at', 'updated_at', 'line_items'
+        ]
+        read_only_fields = ['id', 'status', 'total_amount', 'created_at', 'updated_at']
+
+    def validate_line_items(self, line_items_data):
+        if not line_items_data:
+            raise serializers.ValidationError("A purchase order must have at least one line item.")
+        return line_items_data
+
+    def validate(self, data):
+        line_items_data = data.get('line_items')
+        
+        # Ensure line_items are provided during creation
+        # For partial updates (instance is not None), line_items might not be provided
+        if self.instance is None and not line_items_data:
+             raise serializers.ValidationError({"line_items": "This field is required for creating a purchase order."})
+
+        if line_items_data: # Proceed with sum validation only if line_items are present
+            # Call the specific validator for line_items presence if needed, 
+            # or integrate its logic here if it's only about non-emptiness.
+            # Forcing line_items to be non-empty if provided:
+            if not line_items_data: # This check might be redundant if validate_line_items is always called.
+                raise serializers.ValidationError({"line_items": "Line items cannot be empty if provided."})
+
+            calculated_total_from_lines = Decimal('0.00')
+            for item_data in line_items_data:
+                quantity = item_data.get('quantity', Decimal('0.00'))
+                unit_price = item_data.get('unit_price', Decimal('0.00'))
+                # total_price is calculated by model's save, but for validation, we calculate it here.
+                calculated_total_from_lines += quantity * unit_price
+            
+            # The 'total_amount' field on the PO model itself is what we compare against.
+            # This field might be set by the user or calculated.
+            # For this validation, we are checking the sum of lines against the PO's total_amount.
+            # If total_amount is meant to be purely derived, it should be read_only and set in create/update.
+            # Given 'total_amount' is read_only_fields, this means it's set by the system (e.g. in create/update),
+            # so this validation ensures internal consistency if data.get('total_amount') were used.
+            # However, the requirement is to validate sum of line_items against PO's total_amount.
+            # Let's assume data['total_amount'] is what's provided by user or intended for the PO.
+            # If total_amount is read_only, then this validation should occur before saving,
+            # and total_amount should be set based on lines.
+            # The prompt says total_amount is read-only OR validated.
+            # If it's read-only, we should set it in create/update.
+            # If it's validated, user provides it and we check.
+            # Current setup: 'total_amount' is read_only. So, we'll calculate it and set it in create/update.
+            # This validation block then becomes more about ensuring the sum of lines is consistent
+            # if 'total_amount' was also part of 'data' (which it won't be due to read_only).
+            # So, the role of this validate method shifts to primarily validating line_items structure/content if needed,
+            # and the sum calculation will be used in create/update to set the PO's total_amount.
+
+            # For now, let's stick to the prompt: "ensure that the total_amount of the PurchaseOrder 
+            # matches the sum of total_price of all its line_items."
+            # This implies total_amount might be coming in `data` or we compare against calculated.
+            # Since total_amount is read_only, we will calculate it and this validation
+            # will effectively be ensuring our calculation logic is sound if we were to compare.
+            # For the sake of the prompt, if a 'total_amount' was provided (even if ignored later due to read_only),
+            # we could compare. But it's better to calculate and set.
+            # Let's refine create/update to set total_amount based on lines.
+            # This validation method will ensure line items themselves are valid.
+            pass # Sum validation will be implicitly handled by setting total_amount in create/update
+
+        return data
+
+    @transaction.atomic
+    def create(self, validated_data):
+        line_items_data = validated_data.pop('line_items')
+        
+        calculated_total_amount = Decimal('0.00')
+        for item_data in line_items_data:
+            calculated_total_amount += item_data.get('quantity', Decimal('0.00')) * item_data.get('unit_price', Decimal('0.00'))
+        
+        # Set the calculated total_amount on the PurchaseOrder instance
+        validated_data['total_amount'] = calculated_total_amount
+        
+        purchase_order = PurchaseOrder.objects.create(**validated_data)
+        for item_data in line_items_data:
+            # total_price for line item will be calculated by its own save method.
+            PurchaseOrderLineItem.objects.create(purchase_order=purchase_order, **item_data)
+        return purchase_order
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        line_items_data = validated_data.pop('line_items', None)
+
+        # Update PurchaseOrder instance fields
+        instance.po_number = validated_data.get('po_number', instance.po_number)
+        instance.vendor = validated_data.get('vendor', instance.vendor)
+        instance.order_date = validated_data.get('order_date', instance.order_date)
+        instance.delivery_date = validated_data.get('delivery_date', instance.delivery_date)
+        # instance.status = validated_data.get('status', instance.status) # Status is read-only
+        
+        instance.shipping_address_line_1 = validated_data.get('shipping_address_line_1', instance.shipping_address_line_1)
+        instance.shipping_address_line_2 = validated_data.get('shipping_address_line_2', instance.shipping_address_line_2)
+        instance.shipping_city = validated_data.get('shipping_city', instance.shipping_city)
+        instance.shipping_state = validated_data.get('shipping_state', instance.shipping_state)
+        instance.shipping_zip_code = validated_data.get('shipping_zip_code', instance.shipping_zip_code)
+        instance.shipping_country = validated_data.get('shipping_country', instance.shipping_country)
+        
+        instance.billing_address_line_1 = validated_data.get('billing_address_line_1', instance.billing_address_line_1)
+        instance.billing_address_line_2 = validated_data.get('billing_address_line_2', instance.billing_address_line_2)
+        instance.billing_city = validated_data.get('billing_city', instance.billing_city)
+        instance.billing_state = validated_data.get('billing_state', instance.billing_state)
+        instance.billing_zip_code = validated_data.get('billing_zip_code', instance.billing_zip_code)
+        instance.billing_country = validated_data.get('billing_country', instance.billing_country)
+        
+        instance.terms_and_conditions = validated_data.get('terms_and_conditions', instance.terms_and_conditions)
+        instance.notes = validated_data.get('notes', instance.notes)
+
+        if line_items_data is not None:
+            calculated_total_amount = Decimal('0.00')
+            for item_data in line_items_data:
+                calculated_total_amount += item_data.get('quantity', Decimal('0.00')) * item_data.get('unit_price', Decimal('0.00'))
+            instance.total_amount = calculated_total_amount
+            
+            instance.line_items.all().delete() # Simple replacement of line items
+            for item_data in line_items_data:
+                PurchaseOrderLineItem.objects.create(purchase_order=instance, **item_data)
+        else:
+            # If line items are not provided, recalculate total amount based on existing line items
+            # This might be desired if other PO fields are updated but lines remain, though current spec implies lines are always sent or cleared.
+            # For safety, if line_items_data is None (not part of request), we can re-calculate from existing items.
+            # However, the typical REST approach is "what you send is what you get".
+            # If line_items are not in payload, they are not touched, and total_amount should reflect that.
+            # If line_items is an empty list in payload, they are cleared.
+            # The current logic: if line_items_data is None, total_amount is NOT recalculated from existing lines.
+            # It's only recalculated if line_items_data is provided.
+            pass
+
+
+        instance.save()
         return instance
