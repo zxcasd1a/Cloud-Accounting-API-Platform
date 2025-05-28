@@ -12,6 +12,9 @@ class Account(models.Model):
     account_name = models.CharField(max_length=255)
     account_type = models.CharField(max_length=10, choices=ACCOUNT_TYPES)
     is_customizable = models.BooleanField(default=True)
+    parent_account = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='children')
+    department_code = models.CharField(max_length=20, null=True, blank=True)
+    sub_department_code = models.CharField(max_length=20, null=True, blank=True)
 
     def __str__(self):
         return f"{self.account_code} - {self.account_name}"
@@ -25,7 +28,21 @@ class JournalEntry(models.Model):
     entry_date = models.DateField()
     description = models.TextField()
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='DRAFT')
-    recurring_schedule = models.CharField(max_length=50, null=True, blank=True)
+    recurring_schedule = models.CharField(max_length=50, null=True, blank=True) # Existing field, may need re-evaluation later
+
+    # New fields for recurring entries
+    RECURRENCE_CHOICES = [
+        ('DAILY', 'Daily'),
+        ('WEEKLY', 'Weekly'),
+        ('MONTHLY', 'Monthly'),
+        ('QUARTERLY', 'Quarterly'),
+        ('ANNUALLY', 'Annually'),
+    ]
+    recurrence_pattern = models.CharField(max_length=20, choices=RECURRENCE_CHOICES, null=True, blank=True)
+    recurrence_start_date = models.DateField(null=True, blank=True)
+    recurrence_end_date = models.DateField(null=True, blank=True)
+    next_recurrence_date = models.DateField(null=True, blank=True, db_index=True)
+    is_recurring_template = models.BooleanField(default=False)
 
     def __str__(self):
         return f"Journal Entry {self.id} - {self.entry_date} - {self.status}"

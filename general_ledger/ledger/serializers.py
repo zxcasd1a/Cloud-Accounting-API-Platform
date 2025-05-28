@@ -18,7 +18,11 @@ class JournalEntrySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = JournalEntry
-        fields = ['entry_date', 'description', 'status', 'recurring_schedule', 'transactions']
+        fields = [
+            'entry_date', 'description', 'status', 'recurring_schedule', 
+            'recurrence_pattern', 'recurrence_start_date', 'recurrence_end_date', 
+            'next_recurrence_date', 'is_recurring_template', 'transactions'
+        ]
 
     def validate(self, data):
         transactions_data = data.get('transactions', [])
@@ -61,3 +65,56 @@ class TrialBalanceReportSerializer(serializers.Serializer):
     overall_total_credits = serializers.DecimalField(max_digits=15, decimal_places=2)
     report_date = serializers.DateField(required=False) # Optional: to filter by date
     as_of_date = serializers.DateField(required=False) # Optional: to specify the "as of" date for the report
+
+# Serializers for Income Statement
+class IncomeStatementAccountSerializer(serializers.Serializer):
+    account_code = serializers.CharField()
+    account_name = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    account_type = serializers.CharField() # REVENUE or EXPENSE
+
+class IncomeStatementSerializer(serializers.Serializer):
+    start_date = serializers.DateField()
+    end_date = serializers.DateField()
+    revenue_accounts = serializers.ListField(child=IncomeStatementAccountSerializer())
+    total_revenue = serializers.DecimalField(max_digits=15, decimal_places=2)
+    expense_accounts = serializers.ListField(child=IncomeStatementAccountSerializer())
+    total_expenses = serializers.DecimalField(max_digits=15, decimal_places=2)
+    net_income = serializers.DecimalField(max_digits=15, decimal_places=2)
+
+# Serializers for Balance Sheet
+class BalanceSheetAccountSerializer(serializers.Serializer):
+    account_code = serializers.CharField()
+    account_name = serializers.CharField()
+    balance = serializers.DecimalField(max_digits=12, decimal_places=2)
+    account_type = serializers.CharField() # ASSET, LIABILITY, or EQUITY
+
+class BalanceSheetSerializer(serializers.Serializer):
+    as_of_date = serializers.DateField()
+    asset_accounts = serializers.ListField(child=BalanceSheetAccountSerializer())
+    total_assets = serializers.DecimalField(max_digits=15, decimal_places=2)
+    liability_accounts = serializers.ListField(child=BalanceSheetAccountSerializer())
+    total_liabilities = serializers.DecimalField(max_digits=15, decimal_places=2)
+    equity_accounts = serializers.ListField(child=BalanceSheetAccountSerializer()) # Excluding Retained Earnings here, will be part of total_equity
+    total_equity = serializers.DecimalField(max_digits=15, decimal_places=2) # Includes individual equity accounts + retained_earnings
+    retained_earnings = serializers.DecimalField(max_digits=15, decimal_places=2)
+    total_liabilities_and_equity = serializers.DecimalField(max_digits=15, decimal_places=2)
+
+# Serializers for Cash Flow Statement
+class CashFlowActivitySerializer(serializers.Serializer):
+    description = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+class CashFlowStatementSerializer(serializers.Serializer):
+    start_date = serializers.DateField()
+    end_date = serializers.DateField()
+    net_income = serializers.DecimalField(max_digits=15, decimal_places=2)
+    adjustments_to_net_income = serializers.ListField(child=CashFlowActivitySerializer())
+    net_cash_from_operating_activities = serializers.DecimalField(max_digits=15, decimal_places=2)
+    cash_flows_from_investing_activities = serializers.ListField(child=CashFlowActivitySerializer())
+    net_cash_from_investing_activities = serializers.DecimalField(max_digits=15, decimal_places=2)
+    cash_flows_from_financing_activities = serializers.ListField(child=CashFlowActivitySerializer())
+    net_cash_from_financing_activities = serializers.DecimalField(max_digits=15, decimal_places=2)
+    net_change_in_cash = serializers.DecimalField(max_digits=15, decimal_places=2)
+    cash_at_beginning_of_period = serializers.DecimalField(max_digits=15, decimal_places=2)
+    cash_at_end_of_period = serializers.DecimalField(max_digits=15, decimal_places=2)
