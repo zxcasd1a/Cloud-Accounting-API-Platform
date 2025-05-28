@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import Account, JournalEntry, Transaction, Vendor, Invoice, InvoiceLineItem, PurchaseOrder, PurchaseOrderLineItem
-from django.db import transaction # Changed import for decorator use
+from django.db import transaction # Standardized import
 from decimal import Decimal # Import Decimal for calculations
 
 class AccountSerializer(serializers.ModelSerializer):
@@ -25,27 +25,71 @@ class JournalEntrySerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, data):
+        is_recurring_template = data.get('is_recurring_template', False)
+        recurrence_start_date = data.get('recurrence_start_date')
+        next_recurrence_date = data.get('next_recurrence_date')
+        recurrence_end_date = data.get('recurrence_end_date')
+
+        # --- Validation for Recurring Journal Entry Templates ---
+        if is_recurring_template:
+            # `recurrence_pattern` is mandatory if this is a recurring template.
+            if not data.get('recurrence_pattern'):
+                raise serializers.ValidationError({
+                    "recurrence_pattern": "Recurrence pattern is required for recurring templates."
+                })
+            # `recurrence_start_date` is mandatory if this is a recurring template.
+            if not recurrence_start_date:
+                raise serializers.ValidationError({
+                    "recurrence_start_date": "Recurrence start date is required for recurring templates."
+                })
+
+            # Defaulting and validation for `next_recurrence_date` specifically during template creation.
+            if self.instance is None: # This indicates a POST request (create operation).
+                if next_recurrence_date is None:
+                    # If `next_recurrence_date` is not provided during creation,
+                    # it defaults to the `recurrence_start_date`.
+                    data['next_recurrence_date'] = recurrence_start_date
+                elif recurrence_start_date and next_recurrence_date < recurrence_start_date:
+                    # If `next_recurrence_date` is explicitly provided, it cannot be earlier
+                    # than the `recurrence_start_date`.
+                    raise serializers.ValidationError({
+                        "next_recurrence_date": "Next recurrence date cannot be before recurrence start date."
+                    })
+            
+            # `recurrence_end_date`, if provided, must not be before `recurrence_start_date`.
+            if recurrence_end_date and recurrence_start_date:
+                if recurrence_end_date < recurrence_start_date:
+                    raise serializers.ValidationError({
+                        "recurrence_end_date": "Recurrence end date cannot be before recurrence start date."
+                    })
+        
+        # --- Standard Journal Entry Transaction Validation ---
+        # This part applies to all journal entries, including templates.
         transactions_data = data.get('transactions', [])
         if not transactions_data:
-            raise serializers.ValidationError("A journal entry must have at least one transaction.")
+            # This check might be bypassed if is_recurring_template is True and transactions are optional for templates.
+            # Assuming for now that templates also require transactions for a complete definition.
+            raise serializers.ValidationError({"transactions": "A journal entry must have at least one transaction."})
 
-        total_debits = sum(t.get('debit_amount', 0) for t in transactions_data)
-        total_credits = sum(t.get('credit_amount', 0) for t in transactions_data)
+        total_debits = sum(t.get('debit_amount', Decimal('0.00')) for t in transactions_data) # Ensure Decimal
+        total_credits = sum(t.get('credit_amount', Decimal('0.00')) for t in transactions_data) # Ensure Decimal
 
         if total_debits != total_credits:
             raise serializers.ValidationError("Total debits must equal total credits.")
         
         for t_data in transactions_data:
-            if t_data.get('debit_amount', 0) > 0 and t_data.get('credit_amount', 0) > 0:
+            debit = t_data.get('debit_amount', Decimal('0.00'))
+            credit = t_data.get('credit_amount', Decimal('0.00'))
+            if debit > 0 and credit > 0:
                 raise serializers.ValidationError("A single transaction cannot have both debit and credit amounts.")
-            if t_data.get('debit_amount', 0) == 0 and t_data.get('credit_amount', 0) == 0:
+            if debit == 0 and credit == 0:
                 raise serializers.ValidationError("A transaction must have either a debit or a credit amount.")
 
         return data
 
     def create(self, validated_data):
         transactions_data = validated_data.pop('transactions')
-        with db_transaction.atomic(): # Use the renamed import
+        with transaction.atomic(): # Standardized usage
             journal_entry = JournalEntry.objects.create(**validated_data)
             for transaction_data in transactions_data:
                 Transaction.objects.create(journal_entry=journal_entry, **transaction_data)

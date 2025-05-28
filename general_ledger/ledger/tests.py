@@ -507,3 +507,269 @@ class PurchaseOrderAPITests(APITestCase):
         # If it's already RECEIVED, it should be an error based on current view logic.
         self.assertEqual(response_already_received.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('error', response_already_received.data)
+
+
+# Tests for Recurring Journal Entries
+
+from ledger.management.commands.process_recurring_journal_entries import calculate_next_recurrence_date
+from django.core.management import call_command
+from io import StringIO
+
+class TestCalculateNextRecurrenceDate(TestCase):
+    def test_daily_pattern(self):
+        current = datetime.date(2023, 1, 1)
+        expected = datetime.date(2023, 1, 2)
+        self.assertEqual(calculate_next_recurrence_date(current, 'DAILY', None), expected)
+
+    def test_weekly_pattern(self):
+        current = datetime.date(2023, 1, 1)
+        expected = datetime.date(2023, 1, 8)
+        self.assertEqual(calculate_next_recurrence_date(current, 'WEEKLY', None), expected)
+
+    def test_monthly_pattern_mid_month(self):
+        current = datetime.date(2023, 1, 15)
+        expected = datetime.date(2023, 2, 15)
+        self.assertEqual(calculate_next_recurrence_date(current, 'MONTHLY', None), expected)
+
+    def test_monthly_pattern_end_of_month_to_shorter_month(self):
+        current = datetime.date(2023, 1, 31)
+        expected = datetime.date(2023, 2, 28) # Non-leap year
+        self.assertEqual(calculate_next_recurrence_date(current, 'MONTHLY', None), expected)
+    
+    def test_monthly_pattern_end_of_month_to_longer_month_from_short(self):
+        current = datetime.date(2023, 2, 28) # Non-leap year
+        expected = datetime.date(2023, 3, 28) # relativedelta aims for same day
+        # If specific end-of-month logic is desired (e.g. Feb 28 -> Mar 31), it's not default for relativedelta.
+        # The current implementation of calculate_next_recurrence_date uses simple relativedelta(months=1)
+        # which for Feb 28, 2023 would give Mar 28, 2023.
+        # If the requirement were Feb 28 -> Mar 31, the function would need more complex logic.
+        # For now, testing existing behavior.
+        self.assertEqual(calculate_next_recurrence_date(current, 'MONTHLY', None), expected)
+
+    def test_monthly_pattern_leap_year_feb_29_to_mar(self):
+        current = datetime.date(2024, 2, 29) # Leap year
+        expected = datetime.date(2024, 3, 29) # relativedelta aims for same day.
+        self.assertEqual(calculate_next_recurrence_date(current, 'MONTHLY', None), expected)
+
+    def test_quarterly_pattern(self):
+        current = datetime.date(2023, 1, 15)
+        expected = datetime.date(2023, 4, 15)
+        self.assertEqual(calculate_next_recurrence_date(current, 'QUARTERLY', None), expected)
+        current = datetime.date(2023, 11, 30)
+        expected = datetime.date(2024, 2, 29) # Jumps to Feb 29 in a leap year
+        self.assertEqual(calculate_next_recurrence_date(current, 'QUARTERLY', None), expected)
+
+
+    def test_annually_pattern_simple(self):
+        current = datetime.date(2023, 3, 1)
+        expected = datetime.date(2024, 3, 1)
+        self.assertEqual(calculate_next_recurrence_date(current, 'ANNUALLY', None), expected)
+
+    def test_annually_pattern_leap_year_handling(self):
+        # Feb 29 in a leap year to next year (non-leap)
+        current_leap = datetime.date(2024, 2, 29)
+        expected_non_leap = datetime.date(2025, 2, 28)
+        self.assertEqual(calculate_next_recurrence_date(current_leap, 'ANNUALLY', None), expected_non_leap)
+        
+        # From Feb 28 in a non-leap year, preceding a leap year
+        current_non_leap_to_leap = datetime.date(2023, 2, 28)
+        expected_leap_from_non_leap = datetime.date(2024, 2, 28) # Stays on 28th
+        self.assertEqual(calculate_next_recurrence_date(current_non_leap_to_leap, 'ANNUALLY', None), expected_leap_from_non_leap)
+
+
+    def test_recurrence_end_date_before(self):
+        current = datetime.date(2023, 1, 1)
+        end_date = datetime.date(2023, 1, 10)
+        expected = datetime.date(2023, 1, 2)
+        self.assertEqual(calculate_next_recurrence_date(current, 'DAILY', end_date), expected)
+
+    def test_recurrence_end_date_exact(self):
+        current = datetime.date(2023, 1, 9)
+        end_date = datetime.date(2023, 1, 10)
+        expected = datetime.date(2023, 1, 10)
+        self.assertEqual(calculate_next_recurrence_date(current, 'DAILY', end_date), expected)
+
+    def test_recurrence_end_date_after(self):
+        current = datetime.date(2023, 1, 10)
+        end_date = datetime.date(2023, 1, 10)
+        # Next calculated date (2023-01-11) is after end_date (2023-01-10)
+        self.assertIsNone(calculate_next_recurrence_date(current, 'DAILY', end_date))
+
+    def test_recurrence_end_date_none(self):
+        current = datetime.date(2023, 1, 1)
+        expected = datetime.date(2023, 1, 2)
+        self.assertEqual(calculate_next_recurrence_date(current, 'DAILY', None), expected)
+        
+    def test_unknown_pattern(self):
+        current = datetime.date(2023, 1, 1)
+        self.assertIsNone(calculate_next_recurrence_date(current, 'INVALID_PATTERN', None))
+
+
+class TestProcessRecurringJournalEntries(APITestCase): # Using APITestCase for potential future API interactions / consistency
+    @classmethod
+    def setUpTestData(cls):
+        cls.today = timezone.now().date()
+        cls.debit_account = Account.objects.create(account_code="D100", account_name="Test Debit Acc", account_type="EXPENSE")
+        cls.credit_account = Account.objects.create(account_code="C100", account_name="Test Credit Acc", account_type="ASSET")
+
+    def setUp(self):
+        # Clean up JournalEntry and Transaction before each test method to ensure isolation
+        JournalEntry.objects.all().delete()
+        Transaction.objects.all().delete()
+
+        # Common template setup, can be overridden in specific tests
+        self.template1 = JournalEntry.objects.create(
+            description="Monthly Rent Template",
+            status='POSTED',
+            is_recurring_template=True,
+            recurrence_pattern='MONTHLY',
+            recurrence_start_date=self.today - relativedelta(months=2),
+            next_recurrence_date=self.today
+        )
+        Transaction.objects.create(journal_entry=self.template1, account=self.debit_account, debit_amount=Decimal("100.00"))
+        Transaction.objects.create(journal_entry=self.template1, account=self.credit_account, credit_amount=Decimal("100.00"))
+
+    def test_no_due_templates(self):
+        # Modify template1 so it's not due today
+        self.template1.next_recurrence_date = self.today + relativedelta(days=1)
+        self.template1.save()
+        
+        out = StringIO()
+        call_command('process_recurring_journal_entries', stdout=out)
+        
+        self.assertIn("No active recurring journal entry templates are due today.", out.getvalue())
+        # Count should be 1 (only the template itself)
+        self.assertEqual(JournalEntry.objects.count(), 1)
+
+
+    def test_one_daily_template_due(self):
+        self.template1.recurrence_pattern = 'DAILY'
+        self.template1.next_recurrence_date = self.today # Ensure it's due today
+        self.template1.save()
+
+        out = StringIO()
+        call_command('process_recurring_journal_entries', stdout=out)
+
+        self.assertEqual(JournalEntry.objects.filter(is_recurring_template=False).count(), 1)
+        new_je = JournalEntry.objects.get(is_recurring_template=False, description__icontains=self.template1.description)
+        
+        self.assertEqual(new_je.entry_date, self.today)
+        self.assertEqual(new_je.status, 'PENDING')
+        self.assertEqual(new_je.transactions.count(), 2) # Check copied transactions
+        
+        self.template1.refresh_from_db()
+        self.assertEqual(self.template1.next_recurrence_date, self.today + relativedelta(days=1))
+        self.assertIn(f"Successfully generated Journal Entry ID {new_je.id}", out.getvalue())
+
+    def test_one_monthly_template_due(self):
+        # template1 is already set up as monthly and due today in setUp
+        out = StringIO()
+        call_command('process_recurring_journal_entries', stdout=out)
+
+        self.assertEqual(JournalEntry.objects.filter(is_recurring_template=False).count(), 1)
+        new_je = JournalEntry.objects.get(is_recurring_template=False)
+        
+        self.assertEqual(new_je.entry_date, self.today)
+        self.template1.refresh_from_db()
+        self.assertEqual(self.template1.next_recurrence_date, self.today + relativedelta(months=1))
+        self.assertIn(f"Successfully generated Journal Entry ID {new_je.id}", out.getvalue())
+
+    def test_template_reaches_recurrence_end_date(self):
+        self.template1.next_recurrence_date = self.today
+        # Set end_date so that next calculated date is after it
+        self.template1.recurrence_end_date = self.today + relativedelta(days=15) # e.g. if monthly
+        # If pattern is monthly, next date will be today + 1 month, which is > today + 15 days
+        self.template1.save()
+
+        out = StringIO()
+        call_command('process_recurring_journal_entries', stdout=out)
+        
+        self.assertEqual(JournalEntry.objects.filter(is_recurring_template=False).count(), 1)
+        new_je = JournalEntry.objects.get(is_recurring_template=False)
+        self.assertEqual(new_je.entry_date, self.today)
+
+        self.template1.refresh_from_db()
+        self.assertIsNone(self.template1.next_recurrence_date)
+        self.assertIn("has reached its recurrence end date", out.getvalue())
+
+
+    def test_template_with_recurrence_end_date_equals_next_recurrence_date(self):
+        self.template1.next_recurrence_date = self.today
+        self.template1.recurrence_end_date = self.today # End date is today
+        self.template1.save()
+
+        out = StringIO()
+        call_command('process_recurring_journal_entries', stdout=out)
+
+        self.assertEqual(JournalEntry.objects.filter(is_recurring_template=False).count(), 1)
+        new_je = JournalEntry.objects.get(is_recurring_template=False)
+        self.assertEqual(new_je.entry_date, self.today)
+
+        self.template1.refresh_from_db()
+        self.assertIsNone(self.template1.next_recurrence_date)
+        self.assertIn("has reached its recurrence end date", out.getvalue())
+
+
+    def test_template_with_next_recurrence_date_in_past(self):
+        past_date = self.today - relativedelta(days=3)
+        self.template1.next_recurrence_date = past_date
+        self.template1.recurrence_pattern = 'DAILY' # easier to test catch-up
+        self.template1.save()
+
+        out = StringIO()
+        # Running it once should process the oldest due date
+        call_command('process_recurring_journal_entries', stdout=out)
+        
+        self.assertEqual(JournalEntry.objects.filter(is_recurring_template=False).count(), 1)
+        new_je = JournalEntry.objects.get(is_recurring_template=False)
+        self.assertEqual(new_je.entry_date, past_date) # JE created for the past due date
+
+        self.template1.refresh_from_db()
+        self.assertEqual(self.template1.next_recurrence_date, past_date + relativedelta(days=1))
+        self.assertIn(f"Successfully generated Journal Entry ID {new_je.id} for date {past_date}", out.getvalue())
+        
+        # If we run it again, it should process the next one (past_date + 1 day)
+        # This tests the loop or multiple runs of the command for catch-up
+        # For this test, one run processes one past due item.
+        # A full catch-up loop isn't in the current command, it processes based on "next_recurrence_date <= today"
+
+    def test_template_status_not_posted(self):
+        self.template1.status = 'DRAFT'
+        self.template1.save()
+        
+        out = StringIO()
+        call_command('process_recurring_journal_entries', stdout=out)
+        self.assertIn("No active recurring journal entry templates are due today.", out.getvalue())
+        self.assertEqual(JournalEntry.objects.filter(is_recurring_template=False).count(), 0)
+
+
+    def test_template_is_not_recurring_template(self):
+        self.template1.is_recurring_template = False
+        self.template1.save()
+
+        out = StringIO()
+        call_command('process_recurring_journal_entries', stdout=out)
+        self.assertIn("No active recurring journal entry templates are due today.", out.getvalue())
+        self.assertEqual(JournalEntry.objects.filter(is_recurring_template=False).count(), 0)
+        
+    def test_command_output_logging(self):
+        out = StringIO()
+        err = StringIO()
+        call_command('process_recurring_journal_entries', stdout=out, stderr=err)
+        
+        output = out.getvalue()
+        self.assertIn("Starting to process recurring journal entries...", output)
+        # Based on setUp, template1 is due
+        self.assertIn(f"Processing template ID {self.template1.id}", output)
+        self.assertIn("Successfully generated Journal Entry ID", output) # Dynamic ID
+        self.assertIn(f"Updated next recurrence date for template ID {self.template1.id}", output)
+        self.assertIn("Finished processing recurring journal entries.", output)
+        self.assertEqual(err.getvalue(), "") # No errors expected
+
+    # Simulating error during processing one template is complex and might require mocking.
+    # For now, focusing on the standard paths.
+    # def test_error_during_processing_one_template(self):
+    #     # Setup: Create two templates, one that will cause an error
+    #     # e.g., by mocking a .save() to raise an exception on the second template.
+    #     # Verify: First template processed, error logged for second, command finishes.
+    #     pass
