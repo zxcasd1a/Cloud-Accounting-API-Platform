@@ -1,6 +1,6 @@
 from rest_framework import serializers
-from .models import Account, JournalEntry, Transaction
-from django.db import transaction as db_transaction # Renamed to avoid conflict
+from .models import Account, JournalEntry, Transaction, Vendor, Invoice, InvoiceLineItem # Add InvoiceLineItem
+from django.db import transaction # Changed import for decorator use
 from decimal import Decimal # Import Decimal for calculations
 
 class AccountSerializer(serializers.ModelSerializer):
@@ -118,3 +118,92 @@ class CashFlowStatementSerializer(serializers.Serializer):
     net_change_in_cash = serializers.DecimalField(max_digits=15, decimal_places=2)
     cash_at_beginning_of_period = serializers.DecimalField(max_digits=15, decimal_places=2)
     cash_at_end_of_period = serializers.DecimalField(max_digits=15, decimal_places=2)
+
+class VendorSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Vendor
+        fields = '__all__'
+
+# First, define InvoiceLineItemSerializer
+class InvoiceLineItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InvoiceLineItem
+        fields = ['id', 'expense_account', 'description', 'amount', 'department_code', 'sub_department_code']
+        # Optional: To ensure only expense accounts can be selected if not fully handled by model's limit_choices_to in DRF context:
+        extra_kwargs = {
+            'expense_account': {
+                # Queryset to enforce that only expense accounts can be selected.
+                # This might be redundant if model's limit_choices_to is well-respected by DRF for validation,
+                # but can provide clearer error messages or ensure stricter enforcement at serializer level.
+                'queryset': Account.objects.filter(account_type='EXPENSE'),
+                'error_messages': {'does_not_exist': 'Selected account is not a valid expense account or does not exist.'}
+            }
+        }
+
+class InvoiceSerializer(serializers.ModelSerializer):
+    line_items = InvoiceLineItemSerializer(many=True) 
+
+    class Meta:
+        model = Invoice
+        fields = [
+            'id', 'vendor', 'invoice_number', 'invoice_date', 'due_date', 
+            'total_amount', 'status', 'scanned_image_placeholder', 'notes', 
+            'created_at', 'updated_at', 'line_items' 
+        ]
+        read_only_fields = ['status', 'created_at', 'updated_at']
+
+    def validate_line_items(self, line_items_data):
+        if not line_items_data:
+            raise serializers.ValidationError("An invoice must have at least one line item.")
+        return line_items_data
+        
+    def validate(self, data):
+        # Ensure total_amount matches sum of line_items if line_items are present
+        # This validation is only performed if line_items are part of the input data.
+        # If line_items are not provided (e.g. during a partial update not affecting them),
+        # this validation might not be triggered for them.
+        if 'line_items' in data: # Only validate if line_items are being processed
+            line_items_data = data.get('line_items', [])
+            # The validate_line_items method above ensures line_items_data is not empty if present.
+            # However, if it's an update and line_items is an empty list, this could pass.
+            # The previous check `validate_line_items` handles the "must have at least one" case.
+            
+            total_from_lines = sum(item.get('amount', Decimal('0.00')) for item in line_items_data) # Ensure Decimal sum
+            invoice_total_amount = data.get('total_amount', Decimal('0.00'))
+
+            if total_from_lines != invoice_total_amount:
+                raise serializers.ValidationError(
+                    f"The sum of line item amounts ({total_from_lines}) must equal the invoice total amount ({invoice_total_amount})."
+                )
+        return data
+
+    @transaction.atomic 
+    def create(self, validated_data):
+        line_items_data = validated_data.pop('line_items')
+        invoice = Invoice.objects.create(**validated_data)
+        for item_data in line_items_data:
+            InvoiceLineItem.objects.create(invoice=invoice, **item_data)
+        return invoice
+
+    @transaction.atomic 
+    def update(self, instance, validated_data):
+        line_items_data = validated_data.pop('line_items', None)
+
+        # Update Invoice instance fields
+        instance.vendor = validated_data.get('vendor', instance.vendor)
+        instance.invoice_number = validated_data.get('invoice_number', instance.invoice_number)
+        instance.invoice_date = validated_data.get('invoice_date', instance.invoice_date)
+        instance.due_date = validated_data.get('due_date', instance.due_date)
+        instance.total_amount = validated_data.get('total_amount', instance.total_amount)
+        instance.scanned_image_placeholder = validated_data.get('scanned_image_placeholder', instance.scanned_image_placeholder)
+        instance.notes = validated_data.get('notes', instance.notes)
+        # Status is read-only and handled by actions, so not updated here directly.
+        # created_at and updated_at are auto-managed.
+        instance.save()
+
+        if line_items_data is not None: 
+            instance.line_items.all().delete()
+            for item_data in line_items_data:
+                InvoiceLineItem.objects.create(invoice=instance, **item_data)
+        
+        return instance

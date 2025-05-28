@@ -3,12 +3,14 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AccountViewSet, JournalEntryViewSet, TrialBalanceAPIView, 
     IncomeStatementAPIView, BalanceSheetAPIView, CashFlowStatementAPIView,
-    T12IncomeStatementAPIView # Add T12IncomeStatementAPIView
+    T12IncomeStatementAPIView, VendorViewSet, InvoiceViewSet # Add InvoiceViewSet
 )
 
 router = DefaultRouter()
 router.register(r'accounts', AccountViewSet)
 router.register(r'journal-entries', JournalEntryViewSet)
+router.register(r'vendors', VendorViewSet)
+router.register(r'invoices', InvoiceViewSet) # Add this line
 
 urlpatterns = [
     path('', include(router.urls)),

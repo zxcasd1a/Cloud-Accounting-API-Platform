@@ -1,13 +1,14 @@
 from rest_framework import viewsets, status
+from rest_framework.decorators import action # Added action
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.db.models import Sum, Q
 from decimal import Decimal
-from .models import Account, JournalEntry, Transaction
+from .models import Account, JournalEntry, Transaction, Vendor, Invoice # Add Invoice
 from .serializers import (
     AccountSerializer, JournalEntrySerializer, TrialBalanceReportSerializer, 
     TrialBalanceAccountSerializer, IncomeStatementSerializer, BalanceSheetSerializer,
-    CashFlowStatementSerializer # Add CashFlowStatementSerializer
+    CashFlowStatementSerializer, VendorSerializer, InvoiceSerializer # Add InvoiceSerializer
 )
 from django.utils.dateparse import parse_date
 from django.utils import timezone # For default end_date
@@ -227,6 +228,44 @@ class T12IncomeStatementAPIView(APIView):
             return Response(serializer.validated_data)
         else:
             return Response(serializer.errors, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class InvoiceViewSet(viewsets.ModelViewSet):
+    queryset = Invoice.objects.all()
+    serializer_class = InvoiceSerializer
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        invoice = self.get_object()
+        # Allow approval from DRAFT or PENDING_APPROVAL
+        if invoice.status in [Invoice.DRAFT, Invoice.PENDING_APPROVAL]:
+            invoice.status = Invoice.APPROVED
+            invoice.save()
+            return Response({'status': 'Invoice approved'}, status=status.HTTP_200_OK)
+        return Response({'status': f'Invoice cannot be approved from its current state: {invoice.status}'}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        invoice = self.get_object()
+        # Allow rejection from DRAFT or PENDING_APPROVAL
+        if invoice.status in [Invoice.DRAFT, Invoice.PENDING_APPROVAL]:
+            invoice.status = Invoice.REJECTED
+            invoice.save()
+            return Response({'status': 'Invoice rejected'}, status=status.HTTP_200_OK)
+        return Response({'status': f'Invoice cannot be rejected from its current state: {invoice.status}'}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'])
+    def mark_as_paid(self, request, pk=None):
+        invoice = self.get_object()
+        # Only allow marking as paid if currently APPROVED
+        if invoice.status == Invoice.APPROVED:
+            invoice.status = Invoice.PAID
+            invoice.save()
+            return Response({'status': 'Invoice marked as paid'}, status=status.HTTP_200_OK)
+        return Response({'status': f'Invoice cannot be marked as paid from its current state: {invoice.status}'}, status=status.HTTP_400_BAD_REQUEST)
+
+class VendorViewSet(viewsets.ModelViewSet):
+    queryset = Vendor.objects.all()
+    serializer_class = VendorSerializer
 
 class CashFlowStatementAPIView(APIView):
     

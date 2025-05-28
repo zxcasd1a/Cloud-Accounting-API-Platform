@@ -1,0 +1,45 @@
+account_code,account_name,account_type,parent_account_code,department_code,sub_department_code,is_customizable
+10000,Assets,ASSET,,,,TRUE
+11000,Current Assets,ASSET,10000,,,TRUE
+11100,Cash and Cash Equivalents,ASSET,11000,,,FALSE
+11110,Petty Cash,ASSET,11100,,,TRUE
+11200,Accounts Receivable,ASSET,11000,,,TRUE
+11210,Guest Ledger,ASSET,11200,,,TRUE
+11600,Inventories,ASSET,11000,,,TRUE
+11610,Food Inventory,ASSET,11600,FB,,TRUE
+11620,Beverage Inventory,ASSET,11600,FB,,TRUE
+12000,Non-Current Assets,ASSET,10000,,,TRUE
+12100,Property and Equipment,ASSET,12000,,,TRUE
+20000,Liabilities,LIABILITY,,,,TRUE
+21000,Current Liabilities,LIABILITY,20000,,,TRUE
+21100,Accounts Payable,LIABILITY,21000,,,TRUE
+21200,Accrued Expenses,LIABILITY,21000,,,TRUE
+22000,Long-Term Debt,LIABILITY,20000,,,TRUE
+30000,Equity,EQUITY,,,,TRUE
+31000,Owner's Equity,EQUITY,30000,,,FALSE
+40000,Operating Revenue,REVENUE,,,,TRUE
+41000,Rooms Revenue,REVENUE,40000,RM,,FALSE
+41100,Transient Rooms Revenue,REVENUE,41000,RM,TRANS,TRUE
+41200,Group Rooms Revenue,REVENUE,41000,RM,GROUP,TRUE
+42000,Food and Beverage Revenue,REVENUE,40000,FB,,FALSE
+42100,Food Revenue,REVENUE,42000,FB,FOOD,TRUE
+42200,Beverage Revenue,REVENUE,42000,FB,BEV,TRUE
+42300,Other F&B Revenue,REVENUE,42000,FB,OTHER,TRUE
+47000,Other Operating Revenue,REVENUE,40000,GEN,MISC,TRUE
+60000,Operating Expenses,EXPENSE,,,,TRUE
+61000,Rooms Departmental Expenses,EXPENSE,60000,RM,,TRUE
+61100,Salaries and Wages - Rooms,EXPENSE,61000,RM,PAY,TRUE
+61200,Guest Supplies - Rooms,EXPENSE,61000,RM,SUP,TRUE
+62000,Food and Beverage Departmental Expenses,EXPENSE,60000,FB,,TRUE
+62100,Cost of Food Sales,EXPENSE,62000,FB,COGS,TRUE
+62200,Cost of Beverage Sales,EXPENSE,62000,FB,COGS,TRUE
+62300,Salaries and Wages - F&B,EXPENSE,62000,FB,PAY,TRUE
+70000,Undistributed Operating Expenses,EXPENSE,,,,TRUE
+71000,Administrative & General,EXPENSE,70000,AG,,TRUE
+71100,Salaries and Wages - A&G,EXPENSE,71000,AG,PAY,TRUE
+71200,Office Supplies - A&G,EXPENSE,71000,AG,SUP,TRUE
+72000,Sales & Marketing,EXPENSE,70000,SM,,TRUE
+72100,Advertising Expenses,EXPENSE,72000,SM,ADV,TRUE
+90000,Fixed Charges,EXPENSE,,,,TRUE
+91000,Rent Expense,EXPENSE,90000,FIXED,,TRUE
+92000,Insurance Expense,EXPENSE,90000,FIXED,,TRUE
